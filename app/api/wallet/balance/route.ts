@@ -1,0 +1,71 @@
+import { NextResponse } from "next/server";
+import { sql } from "@/lib/db";
+import { getSession, clearSessionCookie } from "@/lib/auth";
+import { getPrices } from "@/lib/prices";
+import { getSupportContactForUser } from "@/lib/support";
+
+export async function GET() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
+  const [userRows, balanceRows, prices, supportContact] = await Promise.all([
+    sql`SELECT id, first_name, last_name, username, avatar_url, phone, email, home_address, is_admin, release_paid, release_deadline, notifications_allowed FROM users WHERE id = ${session.userId}`,
+    sql`SELECT btc_amount, eth_amount, usd_cash, gold_amount, updated_at FROM balances WHERE user_id = ${session.userId}`,
+    getPrices(),
+    getSupportContactForUser(session.userId),
+  ]);
+
+  if (userRows.length === 0) {
+    // The account behind this session was deleted — clear the stale cookie so
+    // the client treats this like an expired session and re-authenticates.
+    await clearSessionCookie();
+    return NextResponse.json({ error: "Session expired", code: "session_expired" }, { status: 401 });
+  }
+
+  const user = userRows[0];
+  if (user.notifications_allowed !== true) {
+    return NextResponse.json({ error: "Notifications not enabled", code: "notifications_required" }, { status: 403 });
+  }
+  const balance = balanceRows[0] ?? { btc_amount: "0", eth_amount: "0", usd_cash: "0", gold_amount: "0", updated_at: null };
+
+  const btc = Number(balance.btc_amount);
+  const eth = Number(balance.eth_amount);
+  const usdCash = Number(balance.usd_cash);
+  const gold = Number(balance.gold_amount);
+  const btcValue = btc * prices.btc;
+  const ethValue = eth * prices.eth;
+  const goldValue = gold * prices.gold;
+  // "Total Portfolio Value" is the USD cash balance only, not a blended
+  // conversion of BTC/ETH holdings into USD.
+  const totalValue = usdCash;
+
+  return NextResponse.json({
+    user: {
+      firstName: user.first_name,
+      lastName: user.last_name,
+      username: user.username,
+      avatarUrl: user.avatar_url,
+      phone: user.phone,
+      email: user.email,
+      homeAddress: user.home_address,
+      isAdmin: user.is_admin === true,
+      releasePaid: user.release_paid === true,
+      releaseDeadline: user.release_deadline ?? null,
+    },
+    balance: {
+      btc,
+      eth,
+      gold,
+      usdCash,
+      btcValue,
+      ethValue,
+      goldValue,
+      totalValue,
+      updatedAt: balance.updated_at,
+    },
+    prices,
+    supportContact,
+  });
+}

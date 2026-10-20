@@ -1,0 +1,113 @@
+import { NextRequest, NextResponse } from "next/server";
+import { sql } from "@/lib/db";
+import { getSession } from "@/lib/auth";
+import { sendTelegramMessage } from "@/lib/telegram";
+import { getPrices } from "@/lib/prices";
+import { ensureFeeColumns, getFeeConfig, computeFeeAmount } from "@/lib/withdrawal-fee";
+
+const CURRENCIES = ["USD", "BTC", "ETH", "GOLD"] as const;
+type Currency = (typeof CURRENCIES)[number];
+
+const BALANCE_COLUMN: Record<Currency, "usd_cash" | "btc_amount" | "eth_amount" | "gold_amount"> = {
+  USD: "usd_cash",
+  BTC: "btc_amount",
+  ETH: "eth_amount",
+  GOLD: "gold_amount",
+};
+
+export async function GET() {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
+  await ensureFeeColumns();
+  const [rows, feeConfig, prices] = await Promise.all([
+    sql`
+      SELECT id, amount, currency, status, admin_note, fee_type, fee_value, fee_amount, created_at
+      FROM withdrawal_requests
+      WHERE user_id = ${session.userId}
+      ORDER BY created_at DESC
+    `,
+    getFeeConfig(session.userId),
+    getPrices(),
+  ]);
+
+  // feeConfig and rates let the form show a fee estimate; the server
+  // recalculates the real fee when the request is created.
+  return NextResponse.json({
+    withdrawals: rows,
+    feeConfig,
+    rates: { BTC: prices.btc, ETH: prices.eth, GOLD: prices.gold },
+  });
+}
+
+export async function POST(req: NextRequest) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
+  const body = await req.json();
+  const amount = Number(body?.amount);
+  const currency = String(body?.currency || "USD").toUpperCase() as Currency;
+
+  if (!amount || amount <= 0) {
+    return NextResponse.json({ error: "Invalid amount" }, { status: 400 });
+  }
+  if (!CURRENCIES.includes(currency)) {
+    return NextResponse.json({ error: "Invalid currency" }, { status: 400 });
+  }
+
+  const userRows = await sql`
+    SELECT u.release_paid, u.first_name, u.last_name, u.username, a.telegram_id AS admin_telegram_id
+    FROM users u
+    LEFT JOIN users a ON a.id = u.assigned_admin_id
+    WHERE u.id = ${session.userId}
+  `;
+  if (userRows[0]?.release_paid !== true) {
+    return NextResponse.json({ error: "Withdrawals unlock once your release fee is paid" }, { status: 403 });
+  }
+
+  const balanceRows = await sql`SELECT usd_cash, btc_amount, eth_amount, gold_amount FROM balances WHERE user_id = ${session.userId}`;
+  const balance = balanceRows[0];
+  if (!balance) {
+    return NextResponse.json({ error: "Balance not found" }, { status: 404 });
+  }
+
+  const available = Number(balance[BALANCE_COLUMN[currency]]);
+  if (amount > available) {
+    return NextResponse.json({ error: "Insufficient balance" }, { status: 400 });
+  }
+
+  const [feeConfig, prices] = await Promise.all([getFeeConfig(session.userId), getPrices()]);
+  const feeAmount = computeFeeAmount(amount, currency, feeConfig, prices);
+  if (feeAmount >= amount) {
+    return NextResponse.json({ error: "Amount is too small to cover the withdrawal fee" }, { status: 400 });
+  }
+
+  const rows = await sql`
+    INSERT INTO withdrawal_requests (user_id, amount, currency, status, fee_type, fee_value, fee_amount)
+    VALUES (${session.userId}, ${amount}, ${currency}, 'pending', ${feeConfig.type}, ${feeConfig.type ? feeConfig.value : null}, ${feeAmount})
+    RETURNING id, amount, currency, status, admin_note, fee_type, fee_value, fee_amount, created_at
+  `;
+
+  await sql`
+    INSERT INTO transactions (user_id, type, amount, currency, status, note)
+    VALUES (${session.userId}, 'withdrawal', ${amount}, ${currency}, 'pending', 'Withdrawal requested')
+  `;
+
+  const requester = userRows[0];
+  const name = [requester.first_name, requester.last_name].filter(Boolean).join(" ") || requester.username || `User #${session.userId}`;
+  const message = `New withdrawal request: ${name} requested ${amount} ${currency}${feeAmount > 0 ? ` (fee ${feeAmount} ${currency})` : ""}. Review it in the admin panel.`;
+
+  if (requester?.admin_telegram_id) {
+    await sendTelegramMessage(requester.admin_telegram_id, message);
+  } else {
+    // No claiming admin yet — fall back to notifying every Telegram-flagged super-admin so the request doesn't sit unseen.
+    const superAdmins = await sql`SELECT telegram_id FROM users WHERE is_super_admin = true`;
+    await Promise.all(superAdmins.map((a) => sendTelegramMessage(a.telegram_id, message)));
+  }
+
+  return NextResponse.json({ withdrawal: rows[0] });
+}

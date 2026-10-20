@@ -1,0 +1,31 @@
+import { NextRequest, NextResponse } from "next/server";
+import { sql } from "@/lib/db";
+import { getAdminIdentity, can } from "@/lib/auth";
+import { logAdminAction } from "@/lib/admin-log";
+
+export async function DELETE(req: NextRequest, { params }: { params: { id: string; docId: string } }) {
+  const identity = await getAdminIdentity();
+  if (!identity.isAdmin) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
+  const userId = Number(params.id);
+  const docId = Number(params.docId);
+  if (!userId || !docId) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
+
+  const userRows = await sql`SELECT assigned_admin_id FROM users WHERE id = ${userId}`;
+  if (userRows.length === 0) {
+    return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+  if (!can(identity, "view_documents") && userRows[0].assigned_admin_id !== identity.userId) {
+    return NextResponse.json({ error: "You have not claimed this user" }, { status: 403 });
+  }
+
+  const doc = await sql`SELECT file_name FROM user_documents WHERE id = ${docId} AND user_id = ${userId}`;
+  await sql`DELETE FROM user_documents WHERE id = ${docId} AND user_id = ${userId}`;
+  await logAdminAction(identity, "Deleted a document", { targetUserId: userId, details: doc[0]?.file_name });
+
+  return NextResponse.json({ success: true });
+}
