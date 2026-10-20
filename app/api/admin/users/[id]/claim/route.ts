@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { getAdminIdentity } from "@/lib/auth";
-import { logAdminAction } from "@/lib/admin-log";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const identity = await getAdminIdentity();
@@ -30,7 +29,6 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   }
 
   await sql`UPDATE users SET assigned_admin_id = ${identity.userId} WHERE id = ${userId}`;
-  await logAdminAction(identity, "Claimed a client", { targetUserId: userId });
 
   return NextResponse.json({ success: true });
 }

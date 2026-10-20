@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { getAdminIdentity, canManageAdmins } from "@/lib/auth";
-import { logAdminAction } from "@/lib/admin-log";
 import { sendTelegramMessage } from "@/lib/telegram";
 import { ALL_PERMISSIONS, resolvePermissions } from "@/lib/permissions";
 
@@ -14,12 +13,13 @@ export async function GET() {
     return NextResponse.json({ error: "Super-admin access required" }, { status: 403 });
   }
 
-  // Falls back to no permissions column if the migration has not been run yet.
+  // Falls back to no is_hidden/permissions column if the migration has not been run yet.
   const rows = await sql`
-    SELECT u.id, u.first_name, u.last_name, u.username, u.is_admin, u.is_super_admin, u.permissions,
+    SELECT u.id, u.first_name, u.last_name, u.username, u.is_admin, u.is_super_admin, u.permissions, u.is_hidden,
            (SELECT COUNT(*)::int FROM users c WHERE c.assigned_admin_id = u.id) AS claimed_users
     FROM users u
-    WHERE u.is_admin = true OR u.is_super_admin = true
+    WHERE (u.is_admin = true OR u.is_super_admin = true)
+      AND (u.is_hidden IS NOT TRUE OR u.id = ${identity.userId} OR ${identity.isOwner})
     ORDER BY u.first_name ASC
   `.catch(
     () => sql`
@@ -38,6 +38,7 @@ export async function GET() {
     username: a.username,
     is_admin: a.is_admin,
     is_super_admin: a.is_super_admin,
+    is_hidden: a.is_hidden === true,
     claimed_users: a.claimed_users,
     permissions: a.is_super_admin ? resolvePermissions(a.permissions) : [],
   }));
@@ -82,10 +83,8 @@ export async function PATCH(req: NextRequest) {
     if (existing[0].telegram_id) {
       await sendTelegramMessage(existing[0].telegram_id, "You have been granted admin access to the wallet.");
     }
-    await logAdminAction(identity, "Added an admin", { targetUserId: userId });
   } else if (body.isAdmin === false && existing[0].is_admin && !existing[0].is_super_admin) {
     await sql`UPDATE users SET is_admin = false WHERE id = ${userId}`;
-    await logAdminAction(identity, "Removed an admin", { targetUserId: userId });
   }
 
   if (promoting) {
@@ -109,17 +108,9 @@ export async function PATCH(req: NextRequest) {
     `;
   }
 
-  if (typeof body.isSuperAdmin === "boolean" && (promoting || (!body.isSuperAdmin && existing[0].is_super_admin))) {
-    await logAdminAction(identity, body.isSuperAdmin ? "Made a super admin" : "Removed super admin access", { targetUserId: userId });
-  }
-
   if (Array.isArray(body.permissions)) {
     const permissions = ALL_PERMISSIONS.filter((k) => body.permissions.includes(k));
     await sql`UPDATE users SET permissions = ${JSON.stringify(permissions)}::jsonb WHERE id = ${userId} AND is_super_admin = true`;
-    await logAdminAction(identity, "Changed super admin permissions", {
-      targetUserId: userId,
-      details: permissions.length ? permissions.join(", ") : "No extra permissions",
-    });
   }
 
   return NextResponse.json({ success: true });

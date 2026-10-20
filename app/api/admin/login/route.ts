@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminToken, setAdminSessionCookie, clearAdminSessionCookie } from "@/lib/auth";
-import { logAdminAction } from "@/lib/admin-log";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
@@ -16,7 +15,6 @@ export async function POST(req: NextRequest) {
 
   const token = createAdminToken();
   await setAdminSessionCookie(token);
-  await logAdminAction({ isAdmin: true, isSuperAdmin: true, isOwner: true, userId: null, permissions: [] }, "Signed in");
 
   return NextResponse.json({ success: true });
 }

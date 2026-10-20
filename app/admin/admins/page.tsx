@@ -2,12 +2,11 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import AdminNav from "@/app/components/AdminNav";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/toast";
 import { PERMISSIONS } from "@/lib/permissions";
-import { ChevronDown, ScrollText, Search, UserPlus } from "lucide-react";
+import { ChevronDown, Search, UserPlus } from "lucide-react";
 
 type AdminRow = {
   id: number;
@@ -36,7 +35,6 @@ export default function AdminsPage() {
   const [admins, setAdmins] = useState<AdminRow[]>([]);
   const [canManage, setCanManage] = useState(false);
   const [selfId, setSelfId] = useState<number | null>(null);
-  const [canViewLogs, setCanViewLogs] = useState(false);
   const [loading, setLoading] = useState(true);
   const [drafts, setDrafts] = useState<Record<number, string[]>>({});
   const [open, setOpen] = useState<number | null>(null);
@@ -47,7 +45,7 @@ export default function AdminsPage() {
   const [results, setResults] = useState<SearchUser[]>([]);
 
   const load = useCallback(async () => {
-    const [res, who] = await Promise.all([fetch("/api/admin/admins"), fetch("/api/admin/whoami")]);
+    const res = await fetch("/api/admin/admins");
     if (res.status === 401) {
       router.replace("/admin");
       return;
@@ -64,10 +62,6 @@ export default function AdminsPage() {
       setDrafts({});
     } else {
       toast.add({ title: "Could not load admins", type: "error" });
-    }
-    if (who.ok) {
-      const identity = await who.json();
-      setCanViewLogs(identity.isSuperAdmin && identity.permissions?.includes("view_logs"));
     }
     setLoading(false);
   }, [router]);
@@ -144,11 +138,6 @@ export default function AdminsPage() {
                 : "Only the owner or a super admin with every permission can change roles."}
             </p>
           </div>
-          {canViewLogs && (
-            <Link href="/admin/logs" className="shrink-0 flex items-center gap-2 text-sm text-brand-bright hover:text-white mt-1">
-              <ScrollText className="w-4 h-4" /> Activity log
-            </Link>
-          )}
         </div>
 
         {canManage && (

@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { getAdminIdentity, can } from "@/lib/auth";
 import { sendTelegramMessage } from "@/lib/telegram";
-import { logAdminAction } from "@/lib/admin-log";
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const identity = await getAdminIdentity();
@@ -36,8 +35,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     INSERT INTO transactions (user_id, type, amount, currency, status, note)
     VALUES (${userId}, 'adjustment', 0, 'USD', 'completed', ${"Message sent by admin: " + text})
   `;
-
-  await logAdminAction(identity, "Sent a message", { targetUserId: userId, details: text });
 
   return NextResponse.json({ success: true });
 }
